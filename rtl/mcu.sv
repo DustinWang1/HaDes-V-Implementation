@@ -93,6 +93,11 @@ module mcu #(
     wishbone_interface fetch_bus();
     wishbone_interface mem_bus();
 
+    // Interrupts    
+    logic test_interrupt;
+    logic uart_interrupt;
+    logic timer_interrupt;
+
     logic external_interrupt;
     assign external_interrupt = |{
         uart_interrupt,
@@ -197,7 +202,6 @@ module mcu #(
         .wishbone(mem_bus_slaves[4])
     );
 
-    logic uart_interrupt;
     wishbone_uart #(
         .ADDRESS(UART_START),
         .SIZE(UART_SIZE),
@@ -212,7 +216,6 @@ module mcu #(
         .wishbone(mem_bus_slaves[5])
     );
 
-    logic timer_interrupt;
     wishbone_timer #(
         .ADDRESS(TIMER_START),
         .SIZE(TIMER_SIZE),
@@ -244,7 +247,6 @@ module mcu #(
         .wishbone(mem_bus_slaves[7])
     );
 
-    logic test_interrupt;
     wishbone_test #(
         .ADDRESS(TEST_START),
         .SIZE(TEST_SIZE)
