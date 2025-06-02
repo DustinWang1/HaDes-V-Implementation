@@ -97,4 +97,9 @@ For questions, licensing, test bench inquiries, or further information, please c
 - **Email**: [tobias.scheipel@tugraz.at](mailto:tobias.scheipel@tugraz.at)
 - **Website**: [https://www.scheipel.com/oer](https://www.scheipel.com/oer)
 
+## Publication @ RISC-V Summit Europe 2025
+We published this OER at the [RISC-V Summit Europe 2025](https://riscv-europe.org/summit/2025/) as a [Poster](https://graz.elsevierpure.com/files/93678000/HaDes_V_Poster-CR_v1.pdf) and an extended [Abstract Paper](https://www.scheipel.com/wp-content/uploads/2025/05/HaDes_V_RISC_V_Summit_camera_ready-1.pdf). 
+
+**The work also got featured on the official RISC-V International [Blog](https://riscv.org/blog/) [here](https://riscv.org/blog/2025/05/hades-v-learning-by-puzzling-a-modular-approach-to-risc-v-processor-design-education/).**
+
 
