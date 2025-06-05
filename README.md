@@ -1,4 +1,4 @@
-[instrguide]:https://doi.org/10.3217/nytm4-grv34
+[instrguide]:https://repository.tugraz.at/oer/nytm4-grv34
 [lvref]:https://online.tugraz.at/tug_online/wbLv.wbShowLVDetail?pStpSpNr=525082
 [vivado]:https://www.xilinx.com/support/download.html
 [verilator]:https://verilator.org
