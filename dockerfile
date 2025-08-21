@@ -40,6 +40,10 @@ RUN git clone --branch 2023.01.31 https://github.com/riscv-collab/riscv-gnu-tool
     make -j"$(nproc)" && \
     cd /opt && rm -rf riscv-gnu-toolchain
 
+# Installs ssh client
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
 # Workspace for your repo
 WORKDIR /workspace
 
