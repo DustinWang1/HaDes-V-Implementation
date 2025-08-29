@@ -15,7 +15,7 @@
 	],
 	"remoteEnv": {
 		"SSH_AUTH_SOCK": "/ssh-agent"
-	}
+	},
 
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
@@ -28,7 +28,15 @@
 	// "postCreateCommand": "cat /etc/os-release",
 
 	// Configure tool-specific properties.
-	// "customizations": {},
+	"customizations": {
+		"vscode": {
+			// Add the IDs of extensions you want installed when the container is created in the array below.
+			"extensions": [
+				"mshr-h.veriloghdl",
+				"tomoki1207.pdf"
+			]
+		}
+	}
 
 	// Uncomment to connect as an existing user other than the container default. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "devcontainer"
