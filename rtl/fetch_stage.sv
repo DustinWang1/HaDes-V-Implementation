@@ -56,6 +56,7 @@ module fetch_stage (
     - cancel: flush
    */ 
 
+    
     // Internal signals
     logic fault_pend;
     logic req_pend;
@@ -131,7 +132,7 @@ module fetch_stage (
                 if (refill) begin
                     // refill only occurs if buf_valid is not set
                     buf_valid <= 1'b1;
-                    buf_instr <= wb.dat_r;
+                    buf_instr <= wb.dat_miso;
                 end else if (fire) begin
                     // refill and fire cannot occur in the same cycle because of buf_valid check
                     buf_valid <= 1'b0;
