@@ -92,11 +92,6 @@ module fetch_stage (
             wb_stb_r <= 1'b0;
 
         end else begin
-            // --------------------------------------------------------
-            // Default WB CYC policy:
-            //   - active in normal operation (not during JUMP flush)
-            // --------------------------------------------------------
-            // We'll set it precisely per state transitions below.
 
             // --------------------------------------------------------
             // Handle JUMP (flush + restart). Takes priority.
