@@ -5,152 +5,251 @@
  * File: fetch_stage.sv
  */
 
-
-
 module fetch_stage (
-    input logic clk,
-    input logic rst,
+    input  logic clk,
+    input  logic rst,
 
-    // Memory interface
+    // Wishbone (word-addressed master)
     wishbone_interface.master wb,
 
-    //  Output data
+    // Outputs to the next stage
     output logic [31:0] instruction_reg_out,
     output logic [31:0] program_counter_reg_out,
+    output pipeline_status::forwards_t status_forwards_out,
 
-    // Pipeline control
-    output pipeline_status::forwards_t  status_forwards_out,
+    // Backwards control from next stage
     input  pipeline_status::backwards_t status_backwards_in,
-    input  logic [31:0] jump_address_backwards_in
+    input  logic [31:0]                 jump_address_backwards_in
 );
-   /*
-    Inputs:
-    - clk: Clock signal
-    - rst: Reset signal
-    - wb: Wishbone master interface for memory access
-    - status_backwards_in: Pipeline control signal from the next stage
-    - jump_address_backwards_in: Address to jump to if a branch is taken
 
-    Outputs: 
-    - instruction_reg_out: Fetched instruction
-    - program_counter_reg_out: Current program counter value
-    - status_forwards_out: Pipeline control signal to the next stage
+    // ------------------------------------------------------------
+    // Prefetch buffer (2 entries): {pc, instr, fault, valid}
+    // ------------------------------------------------------------
+    logic [31:0] fifo_pc0,    fifo_pc1;
+    logic [31:0] fifo_instr0, fifo_instr1;
+    logic        v0, v1;       // valid flags
+    logic        f0, f1;       // fault flags (set on wb.err)
 
-    Internal Signals:
-    - fault_pend: Indicates if a memory fault is pending
-    - req_pend: Indicates if a memory request is pending
-    - buf_valid: Indicates if the instruction buffer is valid
-    - buf_instr: Holds the buffered instruction
-    - buf_pc: Holds the buffered program counter
+    logic fifo_empty, fifo_one, fifo_full;
+    assign fifo_empty = (v0 == 1'b0);
+    assign fifo_one   = (v0 == 1'b1) && (v1 == 1'b0);
+    assign fifo_full  = (v0 == 1'b1) && (v1 == 1'b1);
 
-    Intent Flags:
-    - flush: (status_backwards_in == JUMP)
-    - ready_i: (status_backwards_in == READY)
-    - present_valid: buf_valid && !flush && !fault_pending
-    - fire: present_valid && ready_i
-    - complete: wb.ack || wb.err
-    - fault_set: wb.err
-    - fault_clear: fault_pend && ready_i
-    - issue_req: !req_pend && !buf_valid && !flush && !fault_pend
-    - refill: wb.ack
-    - cancel: flush
-   */ 
+    // Program counter for next request (byte address)
+    logic [31:0] next_pc;
 
-    
-    // Internal signals
-    logic fault_pend;
-    logic req_pend;
-    logic buf_valid;
-    logic [31:0] buf_instr;
-    logic [31:0] buf_pc;
+    // Wishbone control
+    logic wb_cyc_r, wb_stb_r;
+    logic req_pend;  // exactly one request outstanding when 1
 
-    // Intent Flags
-    logic flush;
-    logic ready_i;
-    logic present_valid;
-    logic fire;
-    logic complete;
-    logic fault_set;
-    logic fault_clear;
-    logic issue_req;
-    logic refill;
-    logic cancel;
+    // Constant wishbone fields for fetch (read-only, full word)
+    assign wb.we       = 1'b0;
+    assign wb.sel      = 4'b1111;
+    assign wb.dat_mosi = 32'h0000_0000;
+    // Word-addressed bus: adr is next_pc[31:2]
+    assign wb.adr      = next_pc >> 2;
 
-    assign instruction_reg_out       = buf_instr;
-    assign program_counter_reg_out   = buf_pc;
+    // Drive interface
+    assign wb.cyc = wb_cyc_r;
+    assign wb.stb = wb_stb_r;
 
-    // Wishbone interface assignments
-    assign wb.cyc      = issue_req ? 1'b1 : 1'b0;
-    assign wb.stb      = issue_req ? 1'b1 : 1'b0;
-    assign wb.we       = 1'b0; // Always read in fetch stage
-    assign wb.adr      = issue_req ? (buf_pc >> 2) : 32'b0;
-    assign wb.sel      = issue_req ? 4'b1111 : 4'b0000;
-    assign wb.dat_mosi = 32'b0; // Not used for read
-    
-    // Intent flags
-    always_comb begin
-        flush          = (status_backwards_in == pipeline_status::JUMP);
-        ready_i        = (status_backwards_in == pipeline_status::READY);
-        present_valid  = buf_valid && !flush && !fault_pend;
-        fire           = present_valid && ready_i;
-        complete       = wb.ack || wb.err;
-        fault_set      = wb.err;
-        fault_clear    = fault_pend && ready_i;
-        issue_req      = !req_pend && !buf_valid && !flush && !fault_pend;
-        refill         = wb.ack;
-        cancel         = flush;
-    end
+    // ------------------------------------------------------------
+    // Helper combinational intent for this cycle
+    // ------------------------------------------------------------
+    logic issue_now;     // we present a word to the next stage this cycle
+    logic can_accept;    // prefetch buffer has/will have space to accept a WB response this cycle
 
-    // Next State Logic
-    always_ff @(posedge clk or posedge rst) begin
+    assign issue_now = (status_backwards_in == pipeline_status::READY) && v0;
+
+    // If we issue_now, a full FIFO will free one slot
+    assign can_accept = (!fifo_full) || issue_now;
+
+    // ------------------------------------------------------------
+    // Main sequential logic
+    // ------------------------------------------------------------
+    always_ff @(posedge clk) begin
+        // -----------------------------
+        // Synchronous reset
+        // -----------------------------
         if (rst) begin
-            fault_pend <= 1'b0;
-            req_pend   <= 1'b0;
-            buf_valid  <= 1'b0;
-            buf_instr  <= 32'b0;
-            buf_pc     <= constants::RESET_ADDRESS;
-        end else begin
-            // Fault pending logic
-            if (fault_set) begin
-                fault_pend <= 1'b1;
-            end else if (fault_clear) begin
-                fault_pend <= 1'b0;
-            end
-            // Flush Logic
-            if (cancel) begin
-                req_pend  <= 1'b0;
-                buf_valid <= 1'b0;
-                buf_pc    <= jump_address_backwards_in;
-            end else begin
-                // Request pending logic
-                if (issue_req) begin
-                    req_pend <= 1'b1;
-                end else if (complete) begin
-                    req_pend <= 1'b0;
-                end
-                // Buffer valid logic
-                if (refill) begin
-                    // refill only occurs if buf_valid is not set
-                    buf_valid <= 1'b1;
-                    buf_instr <= wb.dat_miso;
-                end else if (fire) begin
-                    // refill and fire cannot occur in the same cycle because of buf_valid check
-                    buf_valid <= 1'b0;
-                    buf_pc    <= buf_pc + 32'd4;
-                end
-            end
-        end
-    end
+            // FIFO clear
+            v0 <= 1'b0;  v1 <= 1'b0;
+            f0 <= 1'b0;  f1 <= 1'b0;
+            fifo_pc0    <= 32'h0;
+            fifo_pc1    <= 32'h0;
+            fifo_instr0 <= 32'h0;
+            fifo_instr1 <= 32'h0;
 
-    //Output Logic
-    always_comb begin
-        if (fault_pend)
-            status_forwards_out = pipeline_status::FETCH_FAULT;
-        else if (cancel)
-            status_forwards_out = pipeline_status::BUBBLE;
-        else if (present_valid)
-            status_forwards_out = pipeline_status::VALID;
-    end
-   
+            // Outputs reset
+            instruction_reg_out     <= 32'h0;
+            program_counter_reg_out <= 32'h0;
+            status_forwards_out     <= pipeline_status::BUBBLE;
+
+            // WB/PC
+            next_pc  <= constants::RESET_ADDRESS; // assumes you have constants::RESET_ADDRESS
+            req_pend <= 1'b0;
+            wb_cyc_r <= 1'b0;
+            wb_stb_r <= 1'b0;
+
+        end else begin
+            // --------------------------------------------------------
+            // Default WB CYC policy:
+            //   - active in normal operation (not during JUMP flush)
+            // --------------------------------------------------------
+            // We'll set it precisely per state transitions below.
+
+            // --------------------------------------------------------
+            // Handle JUMP (flush + restart). Takes priority.
+            // --------------------------------------------------------
+            if (status_backwards_in == pipeline_status::JUMP) begin
+                // Flush FIFO
+                v0 <= 1'b0;  v1 <= 1'b0;
+                f0 <= 1'b0;  f1 <= 1'b0;
+
+                // Restart at jump PC
+                next_pc  <= jump_address_backwards_in;
+                req_pend <= 1'b0;
+
+                // Drop the bus for one beat to avoid handling a stale response
+                wb_cyc_r <= 1'b0;
+                wb_stb_r <= 1'b0;
+
+                // Downstream sees a bubble on the jump beat
+                status_forwards_out <= pipeline_status::BUBBLE;
+                // Hold instruction_reg_out/program_counter_reg_out stable
+
+            end else begin
+                // ----------------------------------------------------
+                // Normal operation (STALLED or RUNNING)
+                // ----------------------------------------------------
+
+                // 1) Present head to next stage only if READY & v0
+                if (issue_now) begin
+                    // Drive outputs for this cycle
+                    instruction_reg_out     <= f0 ? 32'h0000_0000 : fifo_instr0;
+                    program_counter_reg_out <= fifo_pc0;
+                    status_forwards_out     <= f0 ? pipeline_status::FETCH_FAULT
+                                                  : pipeline_status::VALID;
+
+                    // Pop the head:
+                    if (fifo_one) begin
+                        v0 <= 1'b0;
+                        f0 <= 1'b0;
+                        // (slot0 data don't matter when v0==0)
+                    end else if (fifo_full) begin
+                        // shift tail -> head
+                        fifo_pc0    <= fifo_pc1;
+                        fifo_instr0 <= fifo_instr1;
+                        f0          <= f1;
+                        v0          <= 1'b1;
+                        // tail becomes empty
+                        v1 <= 1'b0;
+                        f1 <= 1'b0;
+                    end
+                    // If FIFO was empty we wouldn't be in issue_now.
+
+                end else begin
+                    // HOLD outputs on STALL or when empty
+                    // (Do not touch instruction_reg_out / program_counter_reg_out)
+                    // Only status updates if we want to explicitly show a bubble on READY-with-empty:
+                    if (status_backwards_in == pipeline_status::READY && fifo_empty) begin
+                        status_forwards_out <= pipeline_status::BUBBLE;
+                    end
+                    // On STALL, hold prior status as requested.
+                end
+
+                // ----------------------------------------------------
+                // 2) Handle Wishbone responses (ACK/ERR) — only when cyc=1
+                //     Place returned word/fault into FIFO considering a same-cycle pop.
+                // ----------------------------------------------------
+                if (wb_cyc_r && wb.ack) begin
+                    if (fifo_empty) begin
+                        // Write into head
+                        fifo_pc0    <= next_pc;
+                        fifo_instr0 <= wb.dat_miso;
+                        f0          <= 1'b0;
+                        v0          <= 1'b1;
+
+                    end else if (issue_now) begin
+                        // A pop happens this cycle
+                        if (fifo_full) begin
+                            // After pop, tail is free -> put into tail
+                            fifo_pc1    <= next_pc;
+                            fifo_instr1 <= wb.dat_miso;
+                            f1          <= 1'b0;
+                            v1          <= 1'b1;
+                        end else begin
+                            // After pop, head is free -> put into head
+                            fifo_pc0    <= next_pc;
+                            fifo_instr0 <= wb.dat_miso;
+                            f0          <= 1'b0;
+                            v0          <= 1'b1;
+                        end
+
+                    end else begin
+                        // Not popping: put into tail
+                        fifo_pc1    <= next_pc;
+                        fifo_instr1 <= wb.dat_miso;
+                        f1          <= 1'b0;
+                        v1          <= 1'b1;
+                    end
+
+                    // Advance PC for the *next* fetch
+                    next_pc <= next_pc + 32'd4;
+
+                    // Launch another request immediately if we have space
+                    if (can_accept) begin
+                        wb_stb_r <= 1'b1;
+                        req_pend <= 1'b1;
+                        wb_cyc_r <= 1'b1;
+                    end else begin
+                        wb_stb_r <= 1'b0;
+                        req_pend <= 1'b0;
+                        wb_cyc_r <= 1'b1; // keep the cycle open; no harm to leave CYC high
+                    end
+
+                end else if (wb_cyc_r && wb.err) begin
+                    // Error = fault entry
+                    if (fifo_empty) begin
+                        fifo_pc0 <= next_pc; f0 <= 1'b1; v0 <= 1'b1;
+                    end else if (issue_now) begin
+                        if (fifo_full) begin
+                            fifo_pc1 <= next_pc; f1 <= 1'b1; v1 <= 1'b1;
+                        end else begin
+                            fifo_pc0 <= next_pc; f0 <= 1'b1; v0 <= 1'b1;
+                        end
+                    end else begin
+                        fifo_pc1 <= next_pc; f1 <= 1'b1; v1 <= 1'b1;
+                    end
+
+                    next_pc <= next_pc + 32'd4;
+
+                    if (can_accept) begin
+                        wb_stb_r <= 1'b1; req_pend <= 1'b1; wb_cyc_r <= 1'b1;
+                    end else begin
+                        wb_stb_r <= 1'b0; req_pend <= 1'b0; wb_cyc_r <= 1'b1;
+                    end
+
+                end else begin
+                    // No response this cycle
+                    // If no request outstanding and we can accept, start one
+                    if (!req_pend && can_accept) begin
+                        wb_stb_r <= 1'b1;
+                        req_pend <= 1'b1;
+                        wb_cyc_r <= 1'b1;
+                    end else begin
+                        // Keep STB asserted while a request is outstanding; otherwise drop it.
+                        wb_stb_r <= req_pend ? 1'b1 : 1'b0;
+                        // Keep CYC high during normal run
+                        wb_cyc_r <= 1'b1;
+                    end
+                end
+            end // !JUMP
+        end // !rst
+    end // always_ff
 
 endmodule
+
+
+
+
