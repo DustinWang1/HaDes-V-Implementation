@@ -20,8 +20,17 @@ module register_file (
     input  logic [31:0] write_data,
     input  logic        write_enable
 );
+    logic [31:0] rf [32];
+    assign read_data1 = rf[read_address1];
+    assign read_data2 = rf[read_address2];
 
-    // TODO: Delete the following line and implement this module.
-    ref_register_file golden(.*);
+    always_ff @(posedge clk) begin
+        if(rst) begin
+            rf <= '{default:0};
+        end
+        else if(write_enable && write_address != 0) begin
+            rf[write_address] <= write_data;
+        end
+    end 
 
 endmodule

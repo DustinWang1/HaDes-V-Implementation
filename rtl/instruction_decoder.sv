@@ -5,7 +5,38 @@
  * File: instruction_decoder.sv
  */
 
+function automatic instruction::t decode_csr(logic [31:0] instr);
+    automatic instruction::t result;
+    // Set defaults for a CSR instruction
+    result.op = op::ILLEGAL;
+    result.rd_address = instr[11:7];
+    result.rs1_address = instr[19:15];
+    result.rs2_address = 5'b0;
+    result.immediate = {27'b0, instr[19:15]}; // For CSRRI variants
+    result.csr = csr::MSTATUS; // Default enum
 
+    // Translate the 12-bit CSR address to the enum type
+    // and check if it's one of the CSRs implemented in HADES-V
+    case (instr[31:20])
+        csr::MSTATUS, csr::MTVEC, csr::MIP, csr::MIE, csr::MCYCLE, csr::MCYCLEH,
+        csr::MINSTRET, csr::MINSTRETH, csr::MSCRATCH, csr::MEPC, csr::MCAUSE:
+            result.csr = csr::t'(instr[31:20]);
+        default:
+            return '{op: op::ILLEGAL, csr: csr::MSCRATCH, default: '0}; // Unimplemented CSR
+    endcase
+
+    // Decode the specific CSR operation
+    case (instr[14:12]) // funct3
+        3'b001: result.op = op::CSRRW;
+        3'b010: result.op = op::CSRRS;
+        3'b011: result.op = op::CSRRC;
+        3'b101: result.op = op::CSRRWI;
+        3'b110: result.op = op::CSRRSI;
+        3'b111: result.op = op::CSRRCI;
+        default: result.op = op::ILLEGAL;
+    endcase
+    return result;
+endfunction
 
 module instruction_decoder (
     input  logic [31:0]   instruction_in,
@@ -15,173 +46,78 @@ module instruction_decoder (
     assign instruction_out = decoded_instr;
 
     always_comb begin
-        // Start with default assignments to prevent latches and handle illegal instructions
-        decoded_instr.op          = op::ILLEGAL;
-        decoded_instr.rd_address  = 5'b0;
-        decoded_instr.rs1_address = 5'b0;
-        decoded_instr.rs2_address = 5'b0;
-        decoded_instr.immediate   = 32'b0;
-        decoded_instr.csr         = csr::t'(0); // Default to a valid, but neutral, enum value
+        // Default assignment for any instruction that doesn't match a valid pattern
+        decoded_instr = '{op: op::ILLEGAL, csr: csr::MSCRATCH, default: '0};
 
-        case (instruction_in[6:0])
-            // R-Type: Register-Register Operations (e.g., add rd, rs1, rs2)
-            7'b0110011: begin // OP
-                decoded_instr.rd_address  = instruction_in[11:7];
-                decoded_instr.rs1_address = instruction_in[19:15];
-                decoded_instr.rs2_address = instruction_in[24:20];
-                case (instruction_in[14:12]) // funct3
-                    3'b000: decoded_instr.op = (instruction_in[30]) ? op::SUB : op::ADD;
-                    3'b001: decoded_instr.op = op::SLL;
-                    3'b010: decoded_instr.op = op::SLT;
-                    3'b011: decoded_instr.op = op::SLTU;
-                    3'b100: decoded_instr.op = op::XOR;
-                    3'b101: decoded_instr.op = (instruction_in[30]) ? op::SRA : op::SRL;
-                    3'b110: decoded_instr.op = op::OR;
-                    3'b111: decoded_instr.op = op::AND;
-                    default: decoded_instr.op = op::ILLEGAL;
-                endcase
-            end
+        casez (instruction_in)
+            // U-Type
+            {25'b?, 7'b0110111}: decoded_instr = '{op: op::LUI,   rd_address: instruction_in[11:7], csr: csr::MSCRATCH, immediate: {instruction_in[31:12], 12'b0}, default: '0};
+            {25'b?, 7'b0010111}: decoded_instr = '{op: op::AUIPC, rd_address: instruction_in[11:7], csr: csr::MSCRATCH, immediate: {instruction_in[31:12], 12'b0}, default: '0};
 
-            // I-Type: Register-Immediate Operations
-            7'b0010011: begin // OP-IMM (e.g., addi rd, rs1, imm)
-                decoded_instr.rd_address  = instruction_in[11:7];
-                decoded_instr.rs1_address = instruction_in[19:15];
-                decoded_instr.immediate   = {{20{instruction_in[31]}}, instruction_in[31:20]}; // Sign-extended immediate
-                case (instruction_in[14:12]) // funct3
-                    3'b000: decoded_instr.op = op::ADDI;
-                    3'b001: decoded_instr.op = op::SLLI;
-                    3'b010: decoded_instr.op = op::SLTI;
-                    3'b011: decoded_instr.op = op::SLTIU;
-                    3'b100: decoded_instr.op = op::XORI;
-                    3'b101: decoded_instr.op = (instruction_in[30]) ? op::SRAI : op::SRLI;
-                    3'b110: decoded_instr.op = op::ORI;
-                    3'b111: decoded_instr.op = op::ANDI;
-                    default: decoded_instr.op = op::ILLEGAL;
-                endcase
-            end
-            7'b0000011: begin // LOAD (e.g., lw rd, imm(rs1))
-                decoded_instr.rd_address  = instruction_in[11:7];
-                decoded_instr.rs1_address = instruction_in[19:15];
-                decoded_instr.immediate   = {{20{instruction_in[31]}}, instruction_in[31:20]}; // Sign-extended immediate
-                case (instruction_in[14:12]) // funct3
-                    3'b000: decoded_instr.op = op::LB;
-                    3'b001: decoded_instr.op = op::LH;
-                    3'b010: decoded_instr.op = op::LW;
-                    3'b100: decoded_instr.op = op::LBU;
-                    3'b101: decoded_instr.op = op::LHU;
-                    default: decoded_instr.op = op::ILLEGAL;
-                endcase
-            end
-            7'b1100111: begin // JALR
-                decoded_instr.op          = op::JALR;
-                decoded_instr.rd_address  = instruction_in[11:7];
-                decoded_instr.rs1_address = instruction_in[19:15];
-                decoded_instr.immediate   = {{20{instruction_in[31]}}, instruction_in[31:20]}; // Sign-extended immediate
-            end
+            // J-Type
+            {25'b?, 7'b1101111}: decoded_instr = '{op: op::JAL, rd_address: instruction_in[11:7], csr: csr::MSCRATCH, immediate: {{12{instruction_in[31]}}, instruction_in[19:12], instruction_in[20], instruction_in[30:21], 1'b0}, default: '0};
 
-            // S-Type: Store Operations (e.g., sw rs2, imm(rs1))
-            7'b0100011: begin // STORE
-                decoded_instr.rs1_address = instruction_in[19:15];
-                decoded_instr.rs2_address = instruction_in[24:20];
-                // Reassemble immediate from scattered bits, then sign-extend
-                decoded_instr.immediate   = {{20{instruction_in[31]}}, instruction_in[31:25], instruction_in[11:7]};
-                case (instruction_in[14:12]) // funct3
-                    3'b000: decoded_instr.op = op::SB;
-                    3'b001: decoded_instr.op = op::SH;
-                    3'b010: decoded_instr.op = op::SW;
-                    default: decoded_instr.op = op::ILLEGAL;
-                endcase
-            end
+            // I-Type
+            {12'b?, 5'b?, 3'b000, 5'b?, 7'b1100111}: decoded_instr = '{op: op::JALR,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b000, 5'b?, 7'b0000011}: decoded_instr = '{op: op::LB,    rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b001, 5'b?, 7'b0000011}: decoded_instr = '{op: op::LH,    rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b010, 5'b?, 7'b0000011}: decoded_instr = '{op: op::LW,    rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b100, 5'b?, 7'b0000011}: decoded_instr = '{op: op::LBU,   rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b101, 5'b?, 7'b0000011}: decoded_instr = '{op: op::LHU,   rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b000, 5'b?, 7'b0010011}: decoded_instr = '{op: op::ADDI,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b010, 5'b?, 7'b0010011}: decoded_instr = '{op: op::SLTI,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b011, 5'b?, 7'b0010011}: decoded_instr = '{op: op::SLTIU, rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b100, 5'b?, 7'b0010011}: decoded_instr = '{op: op::XORI,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b110, 5'b?, 7'b0010011}: decoded_instr = '{op: op::ORI,   rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {12'b?, 5'b?, 3'b111, 5'b?, 7'b0010011}: decoded_instr = '{op: op::ANDI,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:20]}, default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b001, 5'b?, 7'b0010011}: decoded_instr = '{op: op::SLLI, rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {27'b0, instruction_in[24:20]}, default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b101, 5'b?, 7'b0010011}: decoded_instr = '{op: op::SRLI, rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {27'b0, instruction_in[24:20]}, default: '0};
+            {7'b0100000, 5'b?, 5'b?, 3'b101, 5'b?, 7'b0010011}: decoded_instr = '{op: op::SRAI, rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, immediate: {27'b0, instruction_in[24:20]}, default: '0};
 
-            // B-Type: Branch Operations (e.g., beq rs1, rs2, imm)
-            7'b1100011: begin // BRANCH
-                decoded_instr.rs1_address = instruction_in[19:15];
-                decoded_instr.rs2_address = instruction_in[24:20];
-                // Reassemble immediate and sign-extend. Note the final 0 bit.
-                decoded_instr.immediate = {{20{instruction_in[31]}}, instruction_in[7], instruction_in[30:25], instruction_in[11:8], 1'b0};
-                case (instruction_in[14:12]) // funct3
-                    3'b000: decoded_instr.op = op::BEQ;
-                    3'b001: decoded_instr.op = op::BNE;
-                    3'b100: decoded_instr.op = op::BLT;
-                    3'b101: decoded_instr.op = op::BGE;
-                    3'b110: decoded_instr.op = op::BLTU;
-                    3'b111: decoded_instr.op = op::BGEU;
-                    default: decoded_instr.op = op::ILLEGAL;
-                endcase
-            end
+            // S-Type
+            {7'b?, 5'b?, 5'b?, 3'b000, 5'b?, 7'b0100011}: decoded_instr = '{op: op::SB, rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:25], instruction_in[11:7]}, default: '0};
+            {7'b?, 5'b?, 5'b?, 3'b001, 5'b?, 7'b0100011}: decoded_instr = '{op: op::SH, rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:25], instruction_in[11:7]}, default: '0};
+            {7'b?, 5'b?, 5'b?, 3'b010, 5'b?, 7'b0100011}: decoded_instr = '{op: op::SW, rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[31:25], instruction_in[11:7]}, default: '0};
 
-            // U-Type: Upper Immediate Operations
-            7'b0110111: begin // LUI
-                decoded_instr.op         = op::LUI;
-                decoded_instr.rd_address = instruction_in[11:7];
-                decoded_instr.immediate  = {instruction_in[31:12], 12'b0};
-            end
-            7'b0010111: begin // AUIPC
-                decoded_instr.op         = op::AUIPC;
-                decoded_instr.rd_address = instruction_in[11:7];
-                decoded_instr.immediate  = {instruction_in[31:12], 12'b0};
-            end
+            // B-Type
+            {7'b?, 5'b?, 5'b?, 3'b000, 5'b?, 7'b1100011}: decoded_instr = '{op: op::BEQ,  rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[7], instruction_in[30:25], instruction_in[11:8], 1'b0}, default: '0};
+            {7'b?, 5'b?, 5'b?, 3'b001, 5'b?, 7'b1100011}: decoded_instr = '{op: op::BNE,  rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[7], instruction_in[30:25], instruction_in[11:8], 1'b0}, default: '0};
+            {7'b?, 5'b?, 5'b?, 3'b100, 5'b?, 7'b1100011}: decoded_instr = '{op: op::BLT,  rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[7], instruction_in[30:25], instruction_in[11:8], 1'b0}, default: '0};
+            {7'b?, 5'b?, 5'b?, 3'b101, 5'b?, 7'b1100011}: decoded_instr = '{op: op::BGE,  rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[7], instruction_in[30:25], instruction_in[11:8], 1'b0}, default: '0};
+            {7'b?, 5'b?, 5'b?, 3'b110, 5'b?, 7'b1100011}: decoded_instr = '{op: op::BLTU, rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[7], instruction_in[30:25], instruction_in[11:8], 1'b0}, default: '0};
+            {7'b?, 5'b?, 5'b?, 3'b111, 5'b?, 7'b1100011}: decoded_instr = '{op: op::BGEU, rs1_address: instruction_in[19:15], rs2_address: instruction_in[24:20], csr: csr::MSCRATCH, immediate: {{20{instruction_in[31]}}, instruction_in[7], instruction_in[30:25], instruction_in[11:8], 1'b0}, default: '0};
 
-            // J-Type: Jump Operations
-            7'b1101111: begin // JAL
-                decoded_instr.op         = op::JAL;
-                decoded_instr.rd_address = instruction_in[11:7];
-                // Reassemble immediate from J-type's unique bit locations
-                decoded_instr.immediate = {{12{instruction_in[31]}}, instruction_in[19:12], instruction_in[20], instruction_in[30:21], 1'b0};
-            end
+            // R-Type
+            {7'b0000000, 5'b?, 5'b?, 3'b000, 5'b?, 7'b0110011}: decoded_instr = '{op: op::ADD,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0100000, 5'b?, 5'b?, 3'b000, 5'b?, 7'b0110011}: decoded_instr = '{op: op::SUB,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b001, 5'b?, 7'b0110011}: decoded_instr = '{op: op::SLL,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b010, 5'b?, 7'b0110011}: decoded_instr = '{op: op::SLT,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b011, 5'b?, 7'b0110011}: decoded_instr = '{op: op::SLTU, rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b100, 5'b?, 7'b0110011}: decoded_instr = '{op: op::XOR,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b101, 5'b?, 7'b0110011}: decoded_instr = '{op: op::SRL,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0100000, 5'b?, 5'b?, 3'b101, 5'b?, 7'b0110011}: decoded_instr = '{op: op::SRA,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b110, 5'b?, 7'b0110011}: decoded_instr = '{op: op::OR,   rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
+            {7'b0000000, 5'b?, 5'b?, 3'b111, 5'b?, 7'b0110011}: decoded_instr = '{op: op::AND,  rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, rs2_address: instruction_in[24:20], default: '0};
 
-            // System & CSR Instructions
-            7'b1110011: begin // SYSTEM
-                // First, decode special system instructions that don't use the CSR format
-                if (instruction_in[31:7] == 25'h0000000)      decoded_instr.op = op::ECALL;
-                else if (instruction_in[31:7] == 25'h0010000) decoded_instr.op = op::EBREAK;
-                else if (instruction_in[31:7] == 25'h3020000) decoded_instr.op = op::MRET;
-                else if (instruction_in[31:7] == 25'h1050000) decoded_instr.op = op::WFI;
-                else begin // Otherwise, it's a CSR instruction
-                    case (instruction_in[14:12]) // funct3 for CSR
-                        3'b001: begin decoded_instr.op = op::CSRRW;  decoded_instr.rs1_address = instruction_in[19:15]; end
-                        3'b010: begin decoded_instr.op = op::CSRRS;  decoded_instr.rs1_address = instruction_in[19:15]; end
-                        3'b011: begin decoded_instr.op = op::CSRRC;  decoded_instr.rs1_address = instruction_in[19:15]; end
-                        3'b101: begin decoded_instr.op = op::CSRRWI; decoded_instr.immediate = {27'b0, instruction_in[19:15]}; end
-                        3'b110: begin decoded_instr.op = op::CSRRSI; decoded_instr.immediate = {27'b0, instruction_in[19:15]}; end
-                        3'b111: begin decoded_instr.op = op::CSRRCI; decoded_instr.immediate = {27'b0, instruction_in[19:15]}; end
-                        default: decoded_instr.op = op::ILLEGAL;
-                    endcase
+            // FENCE
+            {12'b?, 5'b?, 3'b000, 5'b?, 7'b0001111}: decoded_instr = '{op: op::FENCE,   rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, default: '0};
+            {12'b?, 5'b?, 3'b001, 5'b?, 7'b0001111}: decoded_instr = '{op: op::FENCE_I, rd_address: instruction_in[11:7], rs1_address: instruction_in[19:15], csr: csr::MSCRATCH, default: '0};
 
-                    decoded_instr.rd_address = instruction_in[11:7];
-                    // Translate the 12-bit CSR address from the instruction into the csr::t enum type
-                    case (instruction_in[31:20])
-                        // List of CSRs implemented in the HADES-V processor
-                        csr::MSTATUS:   decoded_instr.csr = csr::MSTATUS;
-                        csr::MTVEC:     decoded_instr.csr = csr::MTVEC;
-                        csr::MIP:       decoded_instr.csr = csr::MIP;
-                        csr::MIE:       decoded_instr.csr = csr::MIE;
-                        csr::MCYCLE:    decoded_instr.csr = csr::MCYCLE;
-                        csr::MCYCLEH:   decoded_instr.csr = csr::MCYCLEH;
-                        csr::MINSTRET:  decoded_instr.csr = csr::MINSTRET;
-                        csr::MINSTRETH: decoded_instr.csr = csr::MINSTRETH;
-                        csr::MSCRATCH:  decoded_instr.csr = csr::MSCRATCH;
-                        csr::MEPC:      decoded_instr.csr = csr::MEPC;
-                        csr::MCAUSE:    decoded_instr.csr = csr::MCAUSE;
-                        default:        decoded_instr.op = op::ILLEGAL; // Attempt to access an unimplemented CSR
-                    endcase
-                end
-            end
+            // SYSTEM
+            32'h00000073: decoded_instr = '{op: op::ECALL,  csr: csr::MSCRATCH, default: '0};
+            32'h00100073: decoded_instr = '{op: op::EBREAK, csr: csr::MSCRATCH, default: '0};
+            32'h30200073: decoded_instr = '{op: op::MRET,   csr: csr::MSCRATCH, default: '0};
+            32'h10500073: decoded_instr = '{op: op::WFI,    csr: csr::MSCRATCH, default: '0};
+            
+            // SYSTEM 
+            {12'b?, 5'b?, 3'b001, 5'b?, 7'b1110011},
+            {12'b?, 5'b?, 3'b010, 5'b?, 7'b1110011},
+            {12'b?, 5'b?, 3'b011, 5'b?, 7'b1110011},
+            {12'b?, 5'b?, 3'b101, 5'b?, 7'b1110011},
+            {12'b?, 5'b?, 3'b110, 5'b?, 7'b1110011},
+            {12'b?, 5'b?, 3'b111, 5'b?, 7'b1110011}: decoded_instr = decode_csr(instruction_in);
 
-            // FENCE Instructions
-            7'b0001111: begin // FENCE
-                decoded_instr.rd_address  = instruction_in[11:7];
-                decoded_instr.rs1_address = instruction_in[19:15];
-                case (instruction_in[14:12]) // funct3
-                    3'b000: decoded_instr.op = op::FENCE;
-                    3'b001: decoded_instr.op = op::FENCE_I;
-                    default: decoded_instr.op = op::ILLEGAL;
-                endcase
-            end
-
-            default: begin
-                decoded_instr.op = op::ILLEGAL;
-            end
+            default: decoded_instr = '{op: op::ILLEGAL, csr: csr::MSCRATCH, default: '0};
         endcase
     end
 endmodule
