@@ -5,6 +5,7 @@
  * File: instruction_decoder.sv
  */
 
+/* verilator lint_off UNUSEDSIGNAL */
 function automatic instruction::t decode_csr(logic [31:0] instr);
     automatic instruction::t result;
     // Set defaults for a CSR instruction
@@ -37,6 +38,7 @@ function automatic instruction::t decode_csr(logic [31:0] instr);
     endcase
     return result;
 endfunction
+/* verilator lint_on UNUSEDSIGNAL */
 
 module instruction_decoder (
     input  logic [31:0]   instruction_in,
