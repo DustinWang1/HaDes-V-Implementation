@@ -268,8 +268,7 @@ module execute_stage (
         end else if (status_forwards_in != pipeline_status::VALID) begin
             // Pass through errors from decode stage
             status_forwards_out <= status_forwards_in;
-        end else if (status_backwards_in == pipeline_status::STALL && 
-            status_forwards_in != pipeline_status::VALID) begin
+        end else if (status_backwards_in == pipeline_status::STALL && status_forwards_in != pipeline_status::VALID) begin
             status_forwards_out <= pipeline_status::BUBBLE;
         end else begin
             // Stalled - maintain previous status
